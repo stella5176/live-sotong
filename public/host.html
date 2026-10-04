@@ -103,6 +103,17 @@
       card.querySelector(".in-prompt").value.trim());
   });
 
+  const saveMenu = () => {
+    const m = {};
+    menu.querySelectorAll(".act-card").forEach((c) => {
+      m[c.dataset.id] = { title: c.querySelector(".in-title").value.trim() || ACTIVITIES[c.dataset.id].title, prompt: c.querySelector(".in-prompt").value.trim() };
+    });
+    db.set(R("menu"), m);
+  };
+  let menuT;
+  menu.querySelectorAll("input").forEach((i) => i.addEventListener("input", () => { clearTimeout(menuT); menuT = setTimeout(saveMenu, 500); }));
+  saveMenu();
+
   async function launch(activity, title, promptText) {
     if (state && state.activity && state.roundId && respCount > 0 &&
         !confirm("진행 중인 활동이 있습니다. 새 활동을 시작할까요?\n(이전 결과는 화면에서 사라집니다)")) return;

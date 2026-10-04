@@ -50,6 +50,13 @@
   </div>
 </main>
 
+<!-- 진행 컨트롤 (마우스를 움직이면 나타나고, 3초 뒤 흐려짐) -->
+<div class="s-ctrl" id="ctrl">
+  <button class="btn" id="btnPrev" title="이전 활동 (← / PageUp)">◀ 이전</button>
+  <button class="btn ok" id="btnReveal" title="결과 보기/숨기기 (Space)">결과 보기</button>
+  <button class="btn primary" id="btnNext" title="다음 활동 (→ / PageDown)">다음 ▶</button>
+</div>
+
 <script>
 (async () => {
   const { ACTIVITIES, param, joinUrl, toList, makeQR, qrModal } = Pulse;
@@ -74,7 +81,56 @@
     if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {});
   };
 
-  let state = null, list = [], curRound = null, unsub = null, lastShown = -1, wasReveal = null;
+  let state = null, list = [], curRound = null, unsub = null, lastShown = -1, wasReveal = null, menu = {};
+  const ORDER = Object.keys(ACTIVITIES); // weather → comment → wordcloud
+
+  /* ---- 진행 컨트롤 ---- */
+  const idx = () => (state ? ORDER.indexOf(state.activity) : -1);
+  async function go(i) {
+    if (i < 0 || i >= ORDER.length) {
+      await db.set(R("state"), { activity: null, reveal: false, updatedAt: Date.now() });
+      return;
+    }
+    const id = ORDER[i], m = menu[id] || {};
+    await db.set(R("state"), {
+      activity: id, title: m.title || ACTIVITIES[id].title, prompt: m.prompt ?? ACTIVITIES[id].prompt,
+      roundId: id + "_" + Date.now(), reveal: false, updatedAt: Date.now()
+    });
+  }
+  const toggleReveal = () => { if (state) db.update(R("state"), { reveal: !state.reveal, updatedAt: Date.now() }); };
+  const next = () => go(idx() + 1);
+  const prev = () => { if (idx() > 0) go(idx() - 1); };
+  $("btnReveal").onclick = toggleReveal;
+  $("btnNext").onclick = next;
+  $("btnPrev").onclick = prev;
+
+  function updateCtrl() {
+    const i = idx();
+    const r = $("btnReveal");
+    r.disabled = !state;
+    r.textContent = state && state.reveal ? "결과 숨기기" : "결과 보기";
+    r.className = "btn " + (state && state.reveal ? "" : "ok");
+    $("btnPrev").disabled = i <= 0;
+    const n = ORDER[i + 1];
+    $("btnNext").textContent = !state ? `${ACTIVITIES[ORDER[0]].icon} 첫 활동 시작 ▶`
+      : n ? `다음: ${ACTIVITIES[n].icon} ${(menu[n] && menu[n].title) || ACTIVITIES[n].title} ▶` : "활동 마치기 ■";
+  }
+
+  db.listen(R("menu"), (v) => { menu = v || {}; updateCtrl(); });
+
+  // 키보드 · 프레젠터 리모컨: Space=결과 토글, →/PageDown=결과 공개 후 다음, ←/PageUp=이전
+  document.addEventListener("keydown", (e) => {
+    if (document.getElementById("qrModal")?.classList.contains("show")) return;
+    if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggleReveal(); }
+    else if (e.key === "ArrowRight" || e.key === "PageDown") { e.preventDefault(); if (state && !state.reveal) toggleReveal(); else next(); }
+    else if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); prev(); }
+  });
+
+  // 컨트롤 자동 숨김
+  let idleT; const ctrl = $("ctrl");
+  const wake = () => { ctrl.classList.add("awake"); clearTimeout(idleT); idleT = setTimeout(() => { if (!ctrl.matches(":hover")) ctrl.classList.remove("awake"); }, 3000); };
+  ["mousemove", "touchstart", "keydown"].forEach((ev) => document.addEventListener(ev, wake, { passive: true }));
+  wake();
   const results = $("results");
 
   db.listen(R("participants"), (v) => { $("idlePeople").textContent = v ? Object.keys(v).length : 0; });
@@ -85,6 +141,7 @@
       if (unsub) unsub(); unsub = null; curRound = null;
       $("sHead").classList.add("hidden");
       show("vIdle");
+      updateCtrl();
       return;
     }
     const a = ACTIVITIES[state.activity] || {};
@@ -106,6 +163,7 @@
       results.classList.remove("reveal-in"); void results.offsetWidth; results.classList.add("reveal-in");
     }
     paint();
+    updateCtrl();
   });
 
   function paint() {
