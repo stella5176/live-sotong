@@ -7,13 +7,13 @@
  * ========================================================= */
 window.PULSE_CONFIG = {
   firebase: {
-    apiKey: "",
-    authDomain: "",
-    databaseURL: "",
-    projectId: "",
-    storageBucket: "",
-    messagingSenderId: "",
-    appId: ""
+    apiKey: "AIzaSyAjE3PvPsNiwy24-s9JbK5ddvkak_9uyc4",
+    authDomain: "live-sotong.firebaseapp.com",
+    databaseURL: "https://live-sotong-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "live-sotong",
+    storageBucket: "live-sotong.firebasestorage.app",
+    messagingSenderId: "980226540685",
+    appId: "1:980226540685:web:e0f57c59e6aede85c1cec4"
   },
 
   // QR 코드에 넣을 학습자 접속 주소의 기준 URL (비워두면 현재 접속 주소 기준으로 자동 생성)
