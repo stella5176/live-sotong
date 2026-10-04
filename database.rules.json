@@ -1,0 +1,17 @@
+{
+  "rules": {
+    "rooms": {
+      "$room": {
+        ".read": "$room.matches(/^[0-9]{6}$/)",
+        ".write": "$room.matches(/^[0-9]{6}$/)",
+        "responses": {
+          "$round": {
+            "$key": {
+              ".validate": "newData.hasChildren(['value', 'ts']) && newData.child('value').isString() && newData.child('value').val().length > 0 && newData.child('value').val().length <= 80"
+            }
+          }
+        }
+      }
+    }
+  }
+}

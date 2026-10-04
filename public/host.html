@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>강사 모드 · LIVE 소통판</title>
+<link rel="stylesheet" href="styles.css">
+<script src="qrcode.js"></script>
+<script src="config.js"></script>
+<script src="db.js"></script>
+<script src="common.js"></script>
+<script src="render.js"></script>
+</head>
+<body class="host">
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>LIVE 소통판 <span class="muted" style="font-weight:600;font-size:14px">강사 모드</span></div>
+  <span id="demoBadge" class="demo-badge hidden">데모 모드 · Firebase 미연결</span>
+  <span class="chip room">방 코드 <b id="roomCode">------</b></span>
+  <span class="chip">👥 접속 <b id="pCount">0</b>명</span>
+  <div class="spacer"></div>
+  <button class="btn" id="btnQR">▣ QR 코드 띄우기</button>
+  <button class="btn primary" id="btnScreen">대형화면 열기 ↗</button>
+  <button class="btn" id="btnNewRoom" title="새 방 코드로 시작">새 방</button>
+</header>
+
+<div class="layout">
+  <aside class="menu">
+    <h3>활동 메뉴</h3>
+    <div id="menu"></div>
+    <div class="join-box">
+      학습자 접속 주소
+      <div class="url"><code id="joinUrl"></code><button class="btn" id="btnCopy">복사</button></div>
+    </div>
+  </aside>
+
+  <main class="stage" id="stage">
+    <div class="stage-empty" id="stageEmpty">
+      <div>
+        <div class="big">👈</div>
+        <h3>왼쪽에서 활동을 선택해 시작하세요</h3>
+        <div>활동을 시작하면 학습자 휴대폰과 대형화면에 해당 화면이 바로 나타납니다.</div>
+      </div>
+    </div>
+    <div id="stageLive" class="hidden" style="display:flex;flex-direction:column;flex:1">
+      <div class="stage-head">
+        <div class="t">
+          <span class="status" id="status"></span>
+          <h2 id="curTitle"></h2>
+          <p id="curPrompt"></p>
+        </div>
+        <div class="stage-actions">
+          <button class="btn lg ok" id="btnReveal">확인하기</button>
+          <button class="btn" id="btnReset">초기화</button>
+          <button class="btn danger-ghost" id="btnEnd">종료</button>
+        </div>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><div class="n" id="kResp">0</div><div class="l" id="kRespL">응답 수</div></div>
+        <div class="kpi"><div class="n" id="kPeople">0</div><div class="l">참여 인원</div></div>
+        <div class="kpi"><div class="n" id="kRate">0%</div><div class="l">참여율 (접속자 대비)</div></div>
+      </div>
+      <div class="dash" id="dash"></div>
+    </div>
+  </main>
+</div>
+
+<script>
+(async () => {
+  const { ACTIVITIES, param, genRoom, joinUrl, store, toList, qrModal, toast } = Pulse;
+
+  // 비밀번호 (config.js의 hostPin)
+  const pin = (window.PULSE_CONFIG || {}).hostPin;
+  if (pin && sessionStorage.getItem("pulse-pin-ok") !== "1") {
+    const v = prompt("강사 비밀번호를 입력하세요");
+    if (v !== pin) { document.body.innerHTML = '<div class="landing"><div class="landing-card"><h1>접근 불가</h1><p>비밀번호가 올바르지 않습니다.</p><a class="btn primary" href="host.html">다시 시도</a></div></div>'; return; }
+    sessionStorage.setItem("pulse-pin-ok", "1");
+  }
+
+  const db = await PulseDB.ready;
+  if (PulseDB.isDemo) document.getElementById("demoBadge").classList.remove("hidden");
+
+  let room = param("room") || store("pulse-host-room") || genRoom();
+  store("pulse-host-room", room);
+  history.replaceState(null, "", "?room=" + room);
+  const R = (p) => `rooms/${room}/${p}`;
+
+  document.getElementById("roomCode").textContent = room;
+  document.getElementById("joinUrl").textContent = joinUrl(room);
+  db.update(R("meta"), { lastActive: Date.now() });
+
+  /* ---- 메뉴 카드 ---- */
+  const menu = document.getElementById("menu");
+  menu.innerHTML = Object.entries(ACTIVITIES).map(([id, a]) => `
+    <div class="act-card" data-id="${id}" style="margin-bottom:12px">
+      <div class="act-top"><div class="act-icon">${a.icon}</div><div class="act-name">${a.title}</div><span class="act-live hidden">LIVE</span></div>
+      <label>화면 제목</label><input class="in-title" value="${a.title}" maxlength="40">
+      <label>질문 문구</label><input class="in-prompt" value="${a.prompt}" maxlength="80">
+      <button class="btn primary btn-start">이 활동 시작</button>
+    </div>`).join("");
+  menu.querySelectorAll(".act-card").forEach((card) => {
+    card.querySelector(".btn-start").onclick = () => launch(card.dataset.id,
+      card.querySelector(".in-title").value.trim() || ACTIVITIES[card.dataset.id].title,
+      card.querySelector(".in-prompt").value.trim());
+  });
+
+  async function launch(activity, title, promptText) {
+    if (state && state.activity && state.roundId && respCount > 0 &&
+        !confirm("진행 중인 활동이 있습니다. 새 활동을 시작할까요?\n(이전 결과는 화면에서 사라집니다)")) return;
+    await db.set(R("state"), { activity, title, prompt: promptText, roundId: activity + "_" + Date.now(), reveal: false, updatedAt: Date.now() });
+    toast(`'${title}' 활동을 시작했어요`);
+  }
+
+  /* ---- 상단 버튼 ---- */
+  document.getElementById("btnQR").onclick = () => qrModal(room);
+  document.getElementById("btnScreen").onclick = () => {
+    const w = window.open("screen.html?room=" + room, "pulse-screen-" + room, "width=1600,height=900");
+    if (!w) toast("팝업이 차단되었어요. 브라우저 주소창의 팝업 허용을 눌러주세요.");
+  };
+  document.getElementById("btnNewRoom").onclick = () => {
+    if (!confirm("새 방 코드로 시작할까요? 학습자는 새 QR로 다시 접속해야 합니다.")) return;
+    store("pulse-host-room", genRoom());
+    location.href = "host.html";
+  };
+  document.getElementById("btnCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText(joinUrl(room)); toast("접속 주소를 복사했어요"); } catch (e) { toast(joinUrl(room)); }
+  };
+  document.getElementById("btnReveal").onclick = () => {
+    if (!state) return;
+    db.update(R("state"), { reveal: !state.reveal, updatedAt: Date.now() });
+  };
+  document.getElementById("btnReset").onclick = () => {
+    if (!state || !confirm("현재 활동의 응답을 모두 지울까요?")) return;
+    db.remove(R("responses/" + state.roundId));
+  };
+  document.getElementById("btnEnd").onclick = () => {
+    if (!confirm("활동을 종료하고 대기 화면으로 돌아갈까요?")) return;
+    db.set(R("state"), { activity: null, reveal: false, updatedAt: Date.now() });
+  };
+
+  /* ---- 실시간 구독 ---- */
+  let dashOpts = {}, state = null, people = 0, respCount = 0, unsubResp = null, curRound = null, lastList = [];
+  const dash = document.getElementById("dash");
+
+  db.listen(R("participants"), (v) => {
+    people = v ? Object.keys(v).length : 0;
+    document.getElementById("pCount").textContent = people;
+    updateKpis();
+  });
+
+  db.listen(R("state"), (s) => {
+    state = s && s.activity ? s : null;
+    const live = !!state;
+    document.getElementById("stageEmpty").classList.toggle("hidden", live);
+    document.getElementById("stageLive").classList.toggle("hidden", !live);
+    menu.querySelectorAll(".act-card").forEach((c) => {
+      const on = live && c.dataset.id === state.activity;
+      c.classList.toggle("active", on);
+      c.querySelector(".act-live").classList.toggle("hidden", !on);
+      c.querySelector(".btn-start").textContent = on ? "새로 다시 시작" : "이 활동 시작";
+    });
+    if (!live) { if (unsubResp) unsubResp(); unsubResp = null; curRound = null; return; }
+
+    document.getElementById("curTitle").textContent = state.title;
+    document.getElementById("curPrompt").textContent = state.prompt || "";
+    const st = document.getElementById("status");
+    st.className = "status " + (state.reveal ? "revealed" : "live");
+    st.textContent = state.reveal ? "● 대형화면에 결과 공개 중" : "● 응답 수집 중 (대형화면: QR 대기)";
+    const btn = document.getElementById("btnReveal");
+    btn.textContent = state.reveal ? "결과 숨기기" : "확인하기";
+    btn.className = "btn lg " + (state.reveal ? "accent" : "ok");
+    btn.title = state.reveal ? "대형화면을 다시 QR 대기 화면으로" : "대형화면에 실시간 결과를 공개합니다";
+    document.getElementById("kRespL").textContent = state.activity === "wordcloud" ? "제출된 단어 수" : "응답 수";
+
+    if (curRound !== state.roundId) {
+      curRound = state.roundId;
+      if (unsubResp) unsubResp();
+      PulseRender.reset(dash);
+      unsubResp = db.listen(R("responses/" + curRound), (v) => {
+        lastList = toList(v);
+        respCount = lastList.length;
+        dashOpts = {
+          showCount: true,
+          onDelete: state.activity === "comment"
+            ? (key) => { if (confirm("이 소감을 삭제할까요?")) db.remove(R(`responses/${curRound}/${key}`)); }
+            : state.activity === "wordcloud"
+            ? (keys, word) => { if (confirm(`'${word}' 단어를 모두 삭제할까요?`)) { const u = {}; keys.forEach((k) => (u[k] = null)); db.update(R("responses/" + curRound), u); } }
+            : null
+        };
+        PulseRender.render(dash, state.activity, lastList, dashOpts);
+        updateKpis();
+      });
+    }
+  });
+
+  function updateKpis() {
+    const uniq = new Set(lastList.map((r) => r.uid || r.key)).size;
+    document.getElementById("kResp").textContent = respCount;
+    document.getElementById("kPeople").textContent = uniq;
+    document.getElementById("kRate").textContent = people ? Math.min(100, Math.round((uniq / people) * 100)) + "%" : "-";
+  }
+
+  // 소감 카드의 '방금/분 전' 표시 갱신
+  setInterval(() => { if (state && state.activity === "comment") PulseRender.render(dash, "comment", lastList, dashOpts); }, 30000);
+})();
+</script>
+</body>
+</html>

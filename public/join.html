@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#eeecff">
+<title>참여하기 · LIVE 소통판</title>
+<link rel="stylesheet" href="styles.css">
+<script src="config.js"></script>
+<script src="db.js"></script>
+<script src="common.js"></script>
+</head>
+<body class="mobile">
+<div class="m-wrap">
+  <header class="m-top">
+    <div class="brand"><span class="dot"></span>LIVE 소통판</div>
+    <span class="m-room hidden" id="mRoom"></span>
+  </header>
+  <div id="banner" class="m-banner hidden">👀 결과가 대형화면에 공개되었어요!</div>
+  <main id="app"></main>
+  <div class="m-foot">응답은 익명으로 전송됩니다</div>
+</div>
+
+<script>
+(async () => {
+  const { ACTIVITIES, WEATHER, param, esc, uid, store, toast } = Pulse;
+  const app = document.getElementById("app");
+  const room = (param("room") || "").replace(/\D/g, "");
+
+  /* 방 코드 입력 화면 */
+  if (!room) {
+    app.innerHTML = `
+      <div class="m-card" style="text-align:center">
+        <div style="font-size:48px">📱</div>
+        <h1>방 코드를 입력하세요</h1>
+        <p class="q">강사님 화면에 표시된 6자리 숫자</p>
+        <input class="code-input" id="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off">
+        <button class="btn primary m-submit" id="go">참여하기</button>
+      </div>`;
+    const go = () => { const c = document.getElementById("code").value.replace(/\D/g, ""); if (c.length === 6) location.href = "join.html?room=" + c; else toast("6자리 숫자를 입력해 주세요"); };
+    document.getElementById("go").onclick = go;
+    document.getElementById("code").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    return;
+  }
+
+  const db = await PulseDB.ready;
+  const me = uid();
+  const R = (p) => `rooms/${room}/${p}`;
+  document.getElementById("mRoom").textContent = "#" + room;
+  document.getElementById("mRoom").classList.remove("hidden");
+  db.presence(R("participants/" + me), { ts: Date.now() });
+
+  let state = null, curKey = null, cleanup = null;
+
+  db.listen(R("state"), (s) => {
+    state = s && s.activity ? s : null;
+    document.getElementById("banner").classList.toggle("hidden", !(state && state.reveal));
+    const key = state ? state.roundId : "idle";
+    if (key !== curKey) { curKey = key; if (cleanup) cleanup(); cleanup = null; renderView(); }
+    else if (state) { // 제목/문구만 바뀐 경우
+      const t = app.querySelector("h1"); if (t) t.textContent = state.title;
+      const q = app.querySelector(".q"); if (q) q.textContent = state.prompt || "";
+    }
+  });
+
+  function head() {
+    const a = ACTIVITIES[state.activity];
+    return `<span class="m-chip">${a.icon} ${a.title}</span><h1>${esc(state.title)}</h1><p class="q">${esc(state.prompt || "")}</p>`;
+  }
+  const mineKey = () => "pulse-mine-" + room + "-" + state.roundId;
+
+  function renderView() {
+    if (!state) {
+      app.innerHTML = `<div class="m-card m-wait"><div class="big">⏳</div><h2>접속 완료!</h2><p>강사님이 활동을 시작하면<br>이 화면이 자동으로 바뀝니다.</p></div>`;
+      return;
+    }
+    const round = state.roundId;
+    const path = R("responses/" + round);
+
+    /* 오늘의 기분 날씨 */
+    if (state.activity === "weather") {
+      app.innerHTML = `<div class="m-card">${head()}
+        <div class="wx-pick">${WEATHER.map((w) => `
+          <button class="wx-opt" data-id="${w.id}" style="--c:${w.color}">
+            <span class="e">${w.emoji}</span><span><div class="n">${w.label}</div><div class="d">${w.desc}</div></span><span class="ck"></span>
+          </button>`).join("")}</div>
+        <div class="m-done hidden" id="done"></div></div>`;
+      const sel = (id) => {
+        app.querySelectorAll(".wx-opt").forEach((b) => b.classList.toggle("sel", b.dataset.id === id));
+        const w = WEATHER.find((x) => x.id === id);
+        const d = document.getElementById("done");
+        d.classList.toggle("hidden", !w);
+        if (w) d.textContent = `${w.emoji} '${w.label}'(으)로 제출했어요 · 다른 날씨를 누르면 변경돼요`;
+      };
+      app.querySelectorAll(".wx-opt").forEach((b) => b.onclick = async () => {
+        sel(b.dataset.id);
+        if (navigator.vibrate) navigator.vibrate(15);
+        await db.set(`${path}/${me}`, { value: b.dataset.id, uid: me, ts: Date.now() });
+      });
+      cleanup = db.listen(`${path}/${me}`, (v) => sel(v ? v.value : null));
+    }
+
+    /* 한 줄 소감 */
+    else if (state.activity === "comment") {
+      const MAX = 60;
+      app.innerHTML = `<div class="m-card">${head()}
+        <textarea class="m-field" id="txt" maxlength="${MAX}" placeholder="여기에 입력하세요" rows="3"></textarea>
+        <div class="m-counter"><span id="cnt">0</span> / ${MAX}</div>
+        <button class="btn primary m-submit" id="send" disabled>보내기</button>
+        <div class="m-done hidden" id="done">✅ 소감이 전달되었어요! 더 남겨도 좋아요</div>
+        <div class="m-mine" id="mine"></div></div>`;
+      const txt = document.getElementById("txt"), send = document.getElementById("send");
+      const mine = JSON.parse(store(mineKey()) || "[]");
+      const drawMine = () => document.getElementById("mine").innerHTML = mine.map((m) => `<span>📝 ${esc(m)}</span>`).join("");
+      drawMine();
+      txt.oninput = () => { document.getElementById("cnt").textContent = txt.value.length; send.disabled = !txt.value.trim(); };
+      send.onclick = async () => {
+        const v = txt.value.trim().slice(0, MAX); if (!v) return;
+        send.disabled = true;
+        await db.push(path, { value: v, uid: me, ts: Date.now() });
+        mine.push(v); store(mineKey(), JSON.stringify(mine)); drawMine();
+        txt.value = ""; document.getElementById("cnt").textContent = 0;
+        document.getElementById("done").classList.remove("hidden");
+        txt.blur();
+      };
+    }
+
+    /* 워드 클라우드 */
+    else if (state.activity === "wordcloud") {
+      const MAX = 12;
+      app.innerHTML = `<div class="m-card">${head()}
+        <div class="m-words">
+          ${[1, 2, 3].map((i) => `<input class="m-field w-in" maxlength="${MAX}" placeholder="단어 ${i}${i > 1 ? " (선택)" : ""}" enterkeyhint="${i < 3 ? "next" : "send"}">`).join("")}
+        </div>
+        <div class="m-counter">단어당 최대 ${MAX}자 · 최대 3개</div>
+        <button class="btn primary m-submit" id="send" disabled>보내기</button>
+        <div class="m-done hidden" id="done">✅ 단어가 전달되었어요! 더 보내도 좋아요</div>
+        <div class="m-mine" id="mine"></div></div>`;
+      const ins = [...app.querySelectorAll(".w-in")], send = document.getElementById("send");
+      const mine = JSON.parse(store(mineKey()) || "[]");
+      const drawMine = () => document.getElementById("mine").innerHTML = mine.map((m) => `<span>☁️ ${esc(m)}</span>`).join("");
+      drawMine();
+      const check = () => send.disabled = !ins.some((i) => i.value.trim());
+      ins.forEach((inp, idx) => {
+        inp.oninput = check;
+        inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); if (idx < 2) ins[idx + 1].focus(); else send.click(); } };
+      });
+      send.onclick = async () => {
+        const words = [...new Set(ins.map((i) => i.value.trim().replace(/\s+/g, " ").slice(0, MAX)).filter(Boolean))];
+        if (!words.length) return;
+        send.disabled = true;
+        await Promise.all(words.map((w) => db.push(path, { value: w, uid: me, ts: Date.now() })));
+        mine.push(...words); store(mineKey(), JSON.stringify(mine)); drawMine();
+        ins.forEach((i) => (i.value = "")); ins.forEach((i) => i.blur());
+        document.getElementById("done").classList.remove("hidden");
+      };
+    }
+  }
+})();
+</script>
+</body>
+</html>

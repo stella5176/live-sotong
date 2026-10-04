@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>대형화면 · LIVE 소통판</title>
+<link rel="stylesheet" href="styles.css">
+<script src="qrcode.js"></script>
+<script src="config.js"></script>
+<script src="db.js"></script>
+<script src="common.js"></script>
+<script src="render.js"></script>
+</head>
+<body class="screen">
+<header class="s-top">
+  <div class="brand" style="color:#fff"><span class="dot"></span>LIVE 소통판</div>
+  <div class="s-join">참여 주소 <b id="sUrl"></b> &nbsp;·&nbsp; 방 코드 <b class="code" id="sCode"></b></div>
+  <div class="spacer"></div>
+  <button class="btn primary" id="btnQR">▣ QR 크게 보기</button>
+  <button class="btn" id="btnFS">⛶ 전체화면</button>
+</header>
+
+<main class="s-main">
+  <div class="s-head" id="sHead">
+    <span class="s-chip" id="sChip"></span>
+    <h1 id="sTitle"></h1>
+    <p id="sPrompt"></p>
+  </div>
+  <div class="s-body">
+    <!-- 대기(활동 없음) -->
+    <div class="s-idle hidden" id="vIdle">
+      <div class="s-qr"><div class="qrc" id="qrIdle"></div><div class="lbl">방 코드 <b id="codeIdle"></b></div></div>
+      <div>
+        <h2>잠시 후 시작합니다</h2>
+        <p>QR 코드를 스캔해 미리 접속해 주세요 📱</p>
+        <p style="margin-top:18px;font-size:22px">현재 접속 <b id="idlePeople" style="color:#fff">0</b>명</p>
+      </div>
+    </div>
+    <!-- 응답 수집 중 -->
+    <div class="s-wait hidden" id="vWait">
+      <div class="s-qr"><div class="qrc" id="qrWait"></div><div class="lbl">방 코드 <b id="codeWait"></b></div></div>
+      <div class="s-counter">
+        <div class="n" id="waitN">0</div>
+        <div class="l" id="waitL">명 참여</div>
+        <div class="hint"><span class="dots"><span></span><span></span><span></span></span> 실시간으로 응답을 모으고 있어요</div>
+      </div>
+    </div>
+    <!-- 결과 공개 -->
+    <div class="s-results hidden" id="vResults"><div id="results" class="reveal-in"></div></div>
+  </div>
+</main>
+
+<script>
+(async () => {
+  const { ACTIVITIES, param, joinUrl, toList, makeQR, qrModal } = Pulse;
+  const room = param("room");
+  if (!room) { document.body.innerHTML = '<div class="landing"><div class="landing-card" style="color:#141a2e"><h1>방 코드가 없습니다</h1><p>강사 모드 상단의 [대형화면 열기] 버튼으로 열어주세요.</p></div></div>'; return; }
+  const db = await PulseDB.ready;
+  const R = (p) => `rooms/${room}/${p}`;
+  const $ = (id) => document.getElementById(id);
+
+  const url = joinUrl(room);
+  $("sUrl").textContent = url.replace(/^https?:\/\//, "");
+  $("sCode").textContent = room;
+  $("codeIdle").textContent = room;
+  $("codeWait").textContent = room;
+  const qrSize = () => Math.round(Math.min(window.innerHeight * 0.42, 420));
+  const drawQRs = () => { makeQR($("qrIdle"), url, qrSize()); makeQR($("qrWait"), url, qrSize()); };
+  drawQRs();
+  let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(drawQRs, 200); });
+
+  $("btnQR").onclick = () => qrModal(room);
+  $("btnFS").onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {});
+  };
+
+  let state = null, list = [], curRound = null, unsub = null, lastShown = -1, wasReveal = null;
+  const results = $("results");
+
+  db.listen(R("participants"), (v) => { $("idlePeople").textContent = v ? Object.keys(v).length : 0; });
+
+  db.listen(R("state"), (s) => {
+    state = s && s.activity ? s : null;
+    if (!state) {
+      if (unsub) unsub(); unsub = null; curRound = null;
+      $("sHead").classList.add("hidden");
+      show("vIdle");
+      return;
+    }
+    const a = ACTIVITIES[state.activity] || {};
+    $("sHead").classList.remove("hidden");
+    $("sChip").textContent = `${a.icon || ""} ${a.title || ""}`;
+    $("sTitle").textContent = state.title;
+    $("sPrompt").textContent = state.prompt || "";
+    $("waitL").textContent = state.activity === "wordcloud" ? "개의 단어" : state.activity === "comment" ? "개의 소감" : "명 참여";
+
+    if (curRound !== state.roundId) {
+      curRound = state.roundId;
+      if (unsub) unsub();
+      PulseRender.reset(results);
+      lastShown = -1;
+      unsub = db.listen(R("responses/" + curRound), (v) => { list = toList(v); paint(); });
+    }
+    if (wasReveal !== state.reveal) {
+      wasReveal = state.reveal;
+      results.classList.remove("reveal-in"); void results.offsetWidth; results.classList.add("reveal-in");
+    }
+    paint();
+  });
+
+  function paint() {
+    if (!state) return;
+    if (state.reveal) {
+      show("vResults");
+      PulseRender.render(results, state.activity, list, { big: true });
+    } else {
+      show("vWait");
+      const n = $("waitN");
+      if (lastShown !== list.length) {
+        n.textContent = list.length;
+        if (lastShown >= 0) { n.classList.remove("bump"); void n.offsetWidth; n.classList.add("bump"); }
+        lastShown = list.length;
+      }
+    }
+  }
+  function show(id) { ["vIdle", "vWait", "vResults"].forEach((v) => $(v).classList.toggle("hidden", v !== id)); }
+  setInterval(() => { if (state && state.reveal && state.activity === "comment") paint(); }, 30000);
+})();
+</script>
+</body>
+</html>
