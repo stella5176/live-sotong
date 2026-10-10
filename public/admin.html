@@ -120,7 +120,7 @@
   /* ---------- 렌더링 ---------- */
   let raf = null;
   const changed = (code) => { schedule(); if (code === drawerCode) renderDrawer(); };
-  const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = null; renderGrid(); }); };
+  const schedule = () => { if (!raf) raf = setTimeout(() => { raf = null; renderGrid(); }, 60); }; // rAF는 백그라운드 탭에서 멈춤
   const isLive = (r) => r.people > 0 || r.hosts > 0 || r.screens > 0;
 
   function summary(r) {
