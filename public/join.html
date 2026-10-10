@@ -25,7 +25,8 @@
 (async () => {
   const { ACTIVITIES, WEATHER, param, esc, uid, store, toast } = Pulse;
   const app = document.getElementById("app");
-  const room = (param("room") || "").replace(/\D/g, "");
+  let room = (param("room") || "").replace(/\D/g, "");
+  if (room === "000000") room = "";
 
   /* 방 코드 입력 화면 */
   if (!room) {
@@ -48,20 +49,11 @@
   const R = (p) => `rooms/${room}/${p}`;
   document.getElementById("mRoom").textContent = "#" + room;
   document.getElementById("mRoom").classList.remove("hidden");
+  db.listen(R("meta/name"), (n) => { document.getElementById("mRoom").textContent = n ? `${n} · #${room}` : "#" + room; });
   db.presence(R("participants/" + me), { ts: Date.now() });
 
   let state = null, curKey = null, cleanup = null;
 
-  db.listen(R("state"), (s) => {
-    state = s && s.activity ? s : null;
-    document.getElementById("banner").classList.toggle("hidden", !(state && state.reveal));
-    const key = state ? state.roundId : "idle";
-    if (key !== curKey) { curKey = key; if (cleanup) cleanup(); cleanup = null; renderView(); }
-    else if (state) { // 제목/문구만 바뀐 경우
-      const t = app.querySelector("h1"); if (t) t.textContent = state.title;
-      const q = app.querySelector(".q"); if (q) q.textContent = state.prompt || "";
-    }
-  });
 
   function head() {
     const a = ACTIVITIES[state.activity];
@@ -156,6 +148,18 @@
       };
     }
   }
+
+  // 함수 정의가 끝난 뒤 구독 시작 (데모 모드는 콜백이 즉시 실행되므로)
+  db.listen(R("state"), (s) => {
+    state = s && s.activity ? s : null;
+    document.getElementById("banner").classList.toggle("hidden", !(state && state.reveal));
+    const key = state ? state.roundId : "idle";
+    if (key !== curKey) { curKey = key; if (cleanup) cleanup(); cleanup = null; renderView(); }
+    else if (state) { // 제목/문구만 바뀐 경우
+      const t = app.querySelector("h1"); if (t) t.textContent = state.title;
+      const q = app.querySelector(".q"); if (q) q.textContent = state.prompt || "";
+    }
+  });
 })();
 </script>
 </body>

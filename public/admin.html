@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>관리자 모드 · LIVE 소통판</title>
+<link rel="stylesheet" href="styles.css">
+<script src="qrcode.js"></script>
+<script src="config.js"></script>
+<script src="db.js"></script>
+<script src="common.js"></script>
+<script src="render.js"></script>
+</head>
+<body class="host admin">
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>LIVE 소통판 <span class="muted" style="font-weight:600;font-size:14px">관리자 모드</span></div>
+  <span id="demoBadge" class="demo-badge hidden">데모 모드 · Firebase 미연결</span>
+  <span class="chip">전체 반 <b id="tRooms">0</b></span>
+  <span class="chip">진행 중 <b id="tLive">0</b></span>
+  <span class="chip" id="connChip" title="Firebase 무료 요금제는 동시 접속 100개까지입니다">동시 접속 <b id="tConn">0</b><span class="muted"> / 100</span></span>
+  <div class="spacer"></div>
+  <label class="chip filter"><input type="checkbox" id="fToday" checked> 최근 24시간</label>
+  <input class="search" id="fSearch" placeholder="반 이름·코드 검색">
+  <button class="btn primary" id="btnNew">＋ 새 반 만들기</button>
+</header>
+
+<main class="admin-main">
+  <div class="room-grid" id="grid"></div>
+  <div class="admin-empty hidden" id="empty">
+    <div class="big">🗂️</div>
+    <h3>표시할 반이 없어요</h3>
+    <p class="muted">[＋ 새 반 만들기]로 반을 미리 만들거나, 강사 화면을 열면 자동으로 여기에 나타납니다.</p>
+  </div>
+</main>
+
+<!-- 상세 패널 -->
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div>
+      <div class="muted" style="font-size:13px">방 코드 <b id="dCode" style="color:var(--brand);letter-spacing:.1em"></b></div>
+      <h2 id="dName"></h2>
+      <span class="status" id="dStatus"></span>
+    </div>
+    <button class="qr-close" id="dClose" aria-label="닫기" style="position:static">✕</button>
+  </div>
+  <div class="drawer-actions">
+    <button class="btn ok" id="dReveal">결과 보기</button>
+    <button class="btn primary" id="dNext">다음 ▶</button>
+    <button class="btn danger-ghost" id="dEnd">종료</button>
+  </div>
+  <div class="kpis" style="padding:12px 22px 0">
+    <div class="kpi"><div class="n" id="dPeople">0</div><div class="l">접속 학습자</div></div>
+    <div class="kpi"><div class="n" id="dResp">0</div><div class="l">응답 수</div></div>
+  </div>
+  <div class="dash" id="dDash"></div>
+</aside>
+<div class="drawer-dim" id="dim"></div>
+
+<!-- 새 반 만들기 -->
+<div class="qr-overlay" id="newModal">
+  <div class="qr-dialog" style="width:440px;text-align:left">
+    <button class="qr-close" data-close>✕</button>
+    <div class="qr-head" style="margin-bottom:6px">새 반 만들기</div>
+    <p class="muted" style="margin:0 0 16px">방 코드가 자동으로 만들어집니다. QR을 미리 인쇄해 둘 수 있어요.</p>
+    <input class="m-field" id="newName" maxlength="30" placeholder="반 이름 (예: 6반, 오전반)">
+    <button class="btn primary m-submit" id="newCreate">만들기</button>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const { ACTIVITIES, WEATHER, genRoom, joinUrl, esc, toList, qrModal, toast } = Pulse;
+  const $ = (id) => document.getElementById(id);
+
+  const pin = (window.PULSE_CONFIG || {}).adminPin;
+  if (pin && sessionStorage.getItem("pulse-admin-ok") !== "1") {
+    const v = prompt("관리자 비밀번호를 입력하세요");
+    if (v !== pin) { document.body.innerHTML = '<div class="landing"><div class="landing-card"><h1>접근 불가</h1><p>비밀번호가 올바르지 않습니다.</p><a class="btn primary" href="admin.html">다시 시도</a></div></div>'; return; }
+    sessionStorage.setItem("pulse-admin-ok", "1");
+  }
+
+  const db = await PulseDB.ready;
+  if (PulseDB.isDemo) $("demoBadge").classList.remove("hidden");
+  const ORDER = Object.keys(ACTIVITIES);
+  const DAY = 24 * 3600 * 1000;
+
+  /* ---------- 방별 실시간 구독 ---------- */
+  const rooms = new Map(); // code -> { idx, state, people, hosts, screens, list, menu, round, unsubs, unsubResp }
+  let drawerCode = null;
+
+  function subscribe(code) {
+    const r = { idx: {}, state: null, people: 0, hosts: 0, screens: 0, list: [], menu: {}, round: null, unsubs: [], unsubResp: null };
+    rooms.set(code, r);
+    const P = (p) => `rooms/${code}/${p}`;
+    const count = (v) => (v ? Object.keys(v).length : 0);
+    r.unsubs.push(db.listen(P("participants"), (v) => { r.people = count(v); changed(code); }));
+    r.unsubs.push(db.listen(P("hosts"), (v) => { r.hosts = count(v); changed(code); }));
+    r.unsubs.push(db.listen(P("screens"), (v) => { r.screens = count(v); changed(code); }));
+    r.unsubs.push(db.listen(P("menu"), (v) => { r.menu = v || {}; changed(code); }));
+    r.unsubs.push(db.listen(P("state"), (s) => {
+      r.state = s && s.activity ? s : null;
+      const round = r.state ? r.state.roundId : null;
+      if (round !== r.round) {
+        r.round = round;
+        if (r.unsubResp) r.unsubResp();
+        r.unsubResp = null; r.list = [];
+        if (code === drawerCode) PulseRender.reset($("dDash"));
+        if (round) r.unsubResp = db.listen(P("responses/" + round), (v) => { r.list = toList(v); changed(code); });
+      }
+      changed(code);
+    }));
+  }
+  function unsubscribe(code) {
+    const r = rooms.get(code); if (!r) return;
+    r.unsubs.forEach((u) => u && u()); if (r.unsubResp) r.unsubResp();
+    rooms.delete(code);
+  }
+
+
+  /* ---------- 렌더링 ---------- */
+  let raf = null;
+  const changed = (code) => { schedule(); if (code === drawerCode) renderDrawer(); };
+  const schedule = () => { if (!raf) raf = requestAnimationFrame(() => { raf = null; renderGrid(); }); };
+  const isLive = (r) => r.people > 0 || r.hosts > 0 || r.screens > 0;
+
+  function summary(r) {
+    if (!r.state) return '<span class="muted">진행 중인 활동 없음</span>';
+    const L = r.list;
+    if (!L.length) return '<span class="muted">아직 응답이 없어요</span>';
+    if (r.state.activity === "weather") {
+      const c = Object.fromEntries(WEATHER.map((w) => [w.id, 0])); L.forEach((x) => { if (c[x.value] !== undefined) c[x.value]++; });
+      const max = Math.max(...Object.values(c));
+      return `<div class="mini-wx">${WEATHER.map((w) => `<span class="${c[w.id] === max && max ? "lead" : ""}">${w.emoji}<b>${c[w.id]}</b></span>`).join("")}</div>`;
+    }
+    if (r.state.activity === "comment") {
+      const last = [...L].sort((a, b) => (b.ts || 0) - (a.ts || 0))[0];
+      return `<div class="mini-cm">“${esc(last.value)}”</div>`;
+    }
+    const m = new Map(); L.forEach((x) => { const k = String(x.value).trim().toLowerCase(); m.set(k, { w: x.value, n: (m.get(k)?.n || 0) + 1 }); });
+    return `<div class="mini-cl">${[...m.values()].sort((a, b) => b.n - a.n).slice(0, 6).map((x) => `<span>${esc(x.w)}<sup>${x.n}</sup></span>`).join("")}</div>`;
+  }
+
+  function statusOf(r) {
+    if (!r.state) return { cls: "", txt: "대기" };
+    const a = ACTIVITIES[r.state.activity];
+    return r.state.reveal ? { cls: "revealed", txt: `${a.icon} ${r.state.title} · 결과 공개 중` } : { cls: "live", txt: `${a.icon} ${r.state.title} · 응답 수집 중` };
+  }
+
+  function ago(ts) {
+    if (!ts) return "-";
+    const m = Math.floor((Date.now() - ts) / 60000);
+    if (m < 1) return "방금"; if (m < 60) return m + "분 전"; if (m < 1440) return Math.floor(m / 60) + "시간 전";
+    return Math.floor(m / 1440) + "일 전";
+  }
+
+  function renderGrid() {
+    const q = $("fSearch").value.trim().toLowerCase();
+    const today = $("fToday").checked;
+    const all = [...rooms.entries()];
+    let conn = 1; // 이 관리자 화면
+    all.forEach(([, r]) => (conn += r.people + r.hosts + r.screens));
+    $("tRooms").textContent = all.length;
+    $("tLive").textContent = all.filter(([, r]) => r.state && isLive(r)).length;
+    $("tConn").textContent = conn;
+    $("connChip").classList.toggle("warn", conn >= 80);
+
+    const shown = all
+      .filter(([c, r]) => !today || isLive(r) || Date.now() - (r.idx.lastActive || 0) < DAY)
+      .filter(([c, r]) => !q || c.includes(q) || (r.idx.name || "").toLowerCase().includes(q))
+      .sort(([, a], [, b]) => (isLive(b) - isLive(a)) || ((b.idx.lastActive || 0) - (a.idx.lastActive || 0)));
+
+    $("empty").classList.toggle("hidden", shown.length > 0);
+    $("grid").innerHTML = shown.map(([code, r]) => {
+      const st = statusOf(r);
+      return `
+      <article class="room-card ${isLive(r) ? "is-live" : ""} ${code === drawerCode ? "selected" : ""}" data-code="${code}">
+        <div class="rc-top">
+          <div>
+            <div class="rc-name">${esc(r.idx.name || "이름 없는 반")}</div>
+            <div class="rc-code">#${code} · ${isLive(r) ? '<span class="on">● 접속 중</span>' : "최근 " + ago(r.idx.lastActive)}</div>
+          </div>
+          <span class="status ${st.cls}">${esc(st.txt)}</span>
+        </div>
+        <div class="rc-stats">
+          <span>👥 학습자 <b>${r.people}</b></span>
+          <span>📝 응답 <b>${r.list.length}</b></span>
+          <span title="강사 화면">🎤 ${r.hosts ? '<b class="on">열림</b>' : "닫힘"}</span>
+          <span title="대형화면">🖥️ ${r.screens ? '<b class="on">열림</b>' : "닫힘"}</span>
+        </div>
+        <div class="rc-sum">${summary(r)}</div>
+        <div class="rc-actions">
+          <a class="btn" href="host.html?room=${code}" target="_blank" rel="noopener">강사 화면 ↗</a>
+          <a class="btn" href="screen.html?room=${code}" target="_blank" rel="noopener">대형화면 ↗</a>
+          <button class="btn" data-act="qr">QR</button>
+          <button class="btn" data-act="copy" title="강사 화면 주소 복사">링크</button>
+          <button class="btn danger-ghost" data-act="del" title="반 삭제">삭제</button>
+        </div>
+      </article>`;
+    }).join("");
+  }
+
+  /* ---------- 카드 동작 ---------- */
+  $("grid").addEventListener("click", async (e) => {
+    const card = e.target.closest(".room-card"); if (!card) return;
+    const code = card.dataset.code, r = rooms.get(code);
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    if (e.target.closest("a")) return;
+    if (act === "qr") return qrModal(code);
+    if (act === "copy") {
+      const url = joinUrl(code).replace("join.html", "host.html");
+      try { await navigator.clipboard.writeText(url); toast("강사 화면 주소를 복사했어요"); } catch (_) { toast(url); }
+      return;
+    }
+    if (act === "del") {
+      if (!confirm(`'${r.idx.name || code}' 반을 삭제할까요?\n응답 기록이 모두 지워지며 되돌릴 수 없습니다.`)) return;
+      await db.remove(`rooms/${code}`); await db.remove(`rooms/000000/roomIndex/${code}`);
+      toast("삭제했어요"); return;
+    }
+    openDrawer(code);
+  });
+  $("fSearch").addEventListener("input", schedule);
+  $("fToday").addEventListener("change", schedule);
+  setInterval(schedule, 30000);
+
+  /* ---------- 상세 패널 ---------- */
+  function openDrawer(code) {
+    drawerCode = code;
+    PulseRender.reset($("dDash"));
+    document.body.classList.add("drawer-open");
+    renderDrawer(); schedule();
+  }
+  function closeDrawer() { drawerCode = null; document.body.classList.remove("drawer-open"); schedule(); }
+  $("dClose").onclick = closeDrawer; $("dim").onclick = closeDrawer;
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+  function renderDrawer() {
+    const r = rooms.get(drawerCode); if (!r) return;
+    $("dCode").textContent = drawerCode;
+    $("dName").textContent = r.idx.name || "이름 없는 반";
+    const st = statusOf(r);
+    $("dStatus").className = "status " + st.cls; $("dStatus").textContent = st.txt;
+    $("dPeople").textContent = r.people; $("dResp").textContent = r.list.length;
+    $("dReveal").disabled = !r.state;
+    $("dReveal").textContent = r.state && r.state.reveal ? "결과 숨기기" : "결과 보기";
+    const i = r.state ? ORDER.indexOf(r.state.activity) : -1, n = ORDER[i + 1];
+    $("dNext").textContent = !r.state ? "첫 활동 시작 ▶" : n ? `다음: ${ACTIVITIES[n].icon} ${(r.menu[n] && r.menu[n].title) || ACTIVITIES[n].title} ▶` : "활동 마치기 ■";
+    $("dEnd").disabled = !r.state;
+    const dash = $("dDash");
+    if (r.state) PulseRender.render(dash, r.state.activity, r.list, { showCount: true });
+    else { dash.dataset.view = ""; dash.innerHTML = '<div class="cm-empty muted">진행 중인 활동이 없어요</div>'; }
+  }
+
+  const S = () => `rooms/${drawerCode}/state`;
+  $("dReveal").onclick = () => { const r = rooms.get(drawerCode); if (r && r.state) db.update(S(), { reveal: !r.state.reveal, updatedAt: Date.now() }); };
+  $("dEnd").onclick = () => { if (confirm("이 반의 활동을 종료할까요?")) db.set(S(), { activity: null, reveal: false, updatedAt: Date.now() }); };
+  $("dNext").onclick = () => {
+    const r = rooms.get(drawerCode); if (!r) return;
+    const i = (r.state ? ORDER.indexOf(r.state.activity) : -1) + 1;
+    if (i >= ORDER.length) return db.set(S(), { activity: null, reveal: false, updatedAt: Date.now() });
+    const id = ORDER[i], m = r.menu[id] || {};
+    db.set(S(), { activity: id, title: m.title || ACTIVITIES[id].title, prompt: m.prompt ?? ACTIVITIES[id].prompt, roundId: id + "_" + Date.now(), reveal: false, updatedAt: Date.now() });
+  };
+
+  /* ---------- 새 반 만들기 ---------- */
+  const modal = $("newModal");
+  $("btnNew").onclick = () => { modal.classList.add("show"); $("newName").value = ""; setTimeout(() => $("newName").focus(), 50); };
+  modal.addEventListener("click", (e) => { if (e.target === modal || e.target.closest("[data-close]")) modal.classList.remove("show"); });
+  $("newName").addEventListener("keydown", (e) => { if (e.key === "Enter") $("newCreate").click(); });
+  $("newCreate").onclick = async () => {
+    const name = $("newName").value.trim();
+    if (!name) { toast("반 이름을 입력해 주세요"); return; }
+    let code; for (let t = 0; t < 10; t++) { code = genRoom(); if (!(await db.get(`rooms/000000/roomIndex/${code}`))) break; }
+    const now = Date.now();
+    await db.update(`rooms/${code}/meta`, { name, createdAt: now, lastActive: now });
+    await db.set(`rooms/000000/roomIndex/${code}`, { name, lastActive: now, createdAt: now });
+    modal.classList.remove("show");
+    toast(`'${name}' 반을 만들었어요 (#${code})`);
+  };
+
+  // 함수 정의가 끝난 뒤 구독 시작
+  db.listen("rooms/000000/roomIndex", (idx) => {
+    idx = idx || {};
+    Object.keys(idx).forEach((c) => { if (!rooms.has(c)) subscribe(c); rooms.get(c).idx = idx[c]; });
+    [...rooms.keys()].forEach((c) => { if (!idx[c]) unsubscribe(c); });
+    if (drawerCode && !rooms.has(drawerCode)) closeDrawer();
+    schedule();
+  });
+})();
+</script>
+</body>
+</html>

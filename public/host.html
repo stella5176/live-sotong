@@ -16,6 +16,7 @@
   <div class="brand"><span class="dot"></span>LIVE 소통판 <span class="muted" style="font-weight:600;font-size:14px">강사 모드</span></div>
   <span id="demoBadge" class="demo-badge hidden">데모 모드 · Firebase 미연결</span>
   <span class="chip room">방 코드 <b id="roomCode">------</b></span>
+  <label class="chip name-chip" title="대형화면·관리자 모드에 표시됩니다">반 이름 <input id="roomName" maxlength="30" placeholder="예: 6반"></label>
   <span class="chip">👥 접속 <b id="pCount">0</b>명</span>
   <div class="spacer"></div>
   <button class="btn" id="btnQR">▣ QR 코드 띄우기</button>
@@ -80,6 +81,7 @@
   if (PulseDB.isDemo) document.getElementById("demoBadge").classList.remove("hidden");
 
   let room = param("room") || store("pulse-host-room") || genRoom();
+  if (!/^[1-9][0-9]{5}$/.test(room)) room = genRoom(); // 000000은 관리자 목록 전용
   store("pulse-host-room", room);
   history.replaceState(null, "", "?room=" + room);
   const R = (p) => `rooms/${room}/${p}`;
@@ -87,6 +89,20 @@
   document.getElementById("roomCode").textContent = room;
   document.getElementById("joinUrl").textContent = joinUrl(room);
   db.update(R("meta"), { lastActive: Date.now() });
+
+  /* ---- 반 이름 · 관리자 목록 등록 · 강사 화면 접속 표시 ---- */
+  const nameIn = document.getElementById("roomName");
+  const meta = (await db.get(R("meta"))) || {};
+  nameIn.value = meta.name || "";
+  const touchIndex = () => db.update(`rooms/000000/roomIndex/${room}`, { name: nameIn.value.trim(), lastActive: Date.now() });
+  touchIndex();
+  setInterval(touchIndex, 60000);
+  let nameT;
+  nameIn.addEventListener("input", () => {
+    clearTimeout(nameT);
+    nameT = setTimeout(() => { db.update(R("meta"), { name: nameIn.value.trim() }); touchIndex(); }, 500);
+  });
+  db.presence(R("hosts/" + Math.random().toString(36).slice(2, 10)), { ts: Date.now() });
 
   /* ---- 메뉴 카드 ---- */
   const menu = document.getElementById("menu");
@@ -112,6 +128,11 @@
   };
   let menuT;
   menu.querySelectorAll("input").forEach((i) => i.addEventListener("input", () => { clearTimeout(menuT); menuT = setTimeout(saveMenu, 500); }));
+  const savedMenu = (await db.get(R("menu"))) || {};
+  menu.querySelectorAll(".act-card").forEach((c) => {
+    const m = savedMenu[c.dataset.id];
+    if (m) { if (m.title) c.querySelector(".in-title").value = m.title; if (m.prompt != null) c.querySelector(".in-prompt").value = m.prompt; }
+  });
   saveMenu();
 
   async function launch(activity, title, promptText) {
@@ -129,8 +150,9 @@
   };
   document.getElementById("btnNewRoom").onclick = () => {
     if (!confirm("새 방 코드로 시작할까요? 학습자는 새 QR로 다시 접속해야 합니다.")) return;
-    store("pulse-host-room", genRoom());
-    location.href = "host.html";
+    const code = genRoom();
+    store("pulse-host-room", code);
+    location.href = "host.html?room=" + code;
   };
   document.getElementById("btnCopy").onclick = async () => {
     try { await navigator.clipboard.writeText(joinUrl(room)); toast("접속 주소를 복사했어요"); } catch (e) { toast(joinUrl(room)); }

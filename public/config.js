@@ -21,5 +21,8 @@ window.PULSE_CONFIG = {
   publicBaseUrl: "",
 
   // 강사 화면 진입 비밀번호 (비워두면 비밀번호 없이 진입)
-  hostPin: ""
+  hostPin: "",
+
+  // 관리자 모드 비밀번호 (비워두면 비밀번호 없이 진입)
+  adminPin: ""
 };

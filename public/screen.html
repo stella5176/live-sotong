@@ -13,7 +13,7 @@
 </head>
 <body class="screen">
 <header class="s-top">
-  <div class="brand" style="color:#fff"><span class="dot"></span>LIVE 소통판</div>
+  <div class="brand" style="color:#fff"><span class="dot"></span>LIVE 소통판 <span class="s-name hidden" id="sName"></span></div>
   <div class="s-join">참여 주소 <b id="sUrl"></b> &nbsp;·&nbsp; 방 코드 <b class="code" id="sCode"></b></div>
   <div class="spacer"></div>
   <button class="btn primary" id="btnQR">▣ QR 크게 보기</button>
@@ -69,6 +69,8 @@
   const url = joinUrl(room);
   $("sUrl").textContent = url.replace(/^https?:\/\//, "");
   $("sCode").textContent = room;
+  db.listen(R("meta/name"), (n) => { $("sName").textContent = n || ""; $("sName").classList.toggle("hidden", !n); });
+  db.presence(R("screens/" + Math.random().toString(36).slice(2, 10)), { ts: Date.now() });
   $("codeIdle").textContent = room;
   $("codeWait").textContent = room;
   const qrSize = () => Math.round(Math.min(window.innerHeight * 0.42, 420));
